@@ -1,3 +1,2 @@
-CREATE DATABASE auth_db;
 CREATE DATABASE expense_db;
 CREATE DATABASE category_db;
