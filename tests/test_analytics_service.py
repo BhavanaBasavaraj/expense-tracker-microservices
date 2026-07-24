@@ -11,7 +11,7 @@ import app.routers.analytics as analytics_module
 def override_get_current_user():
     return {"user_id": 1, "email": "analytics.user@example.com"}
 
-async def mock_get_expenses(token: str, user_id: int):
+async def mock_get_expenses(request, user_id: int, authorization=None):
     return [
         {"id": 1, "user_id": 1, "title": "Salary", "amount": 5000.0, "type": "income", "date": "2026-07-01", "category_id": 1},
         {"id": 2, "user_id": 1, "title": "Rent", "amount": 1500.0, "type": "expense", "date": "2026-07-02", "category_id": 2},

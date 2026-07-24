@@ -6,6 +6,8 @@ class Settings(BaseSettings):
     category_service_url: str = "http://category-service:8003"
     analytics_service_url: str = "http://analytics-service:8004"
     redis_url: str = "redis://redis:6379/0"
+    secret_key: str = "supersecretkey123"
+    algorithm: str = "HS256"
 
     class Config:
         env_file = ".env"
