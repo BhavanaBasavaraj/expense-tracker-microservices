@@ -1,62 +1,61 @@
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
-from sqlalchemy.pool import StaticPool
-
 import sys, os
+
 sys.path.insert(0, os.path.abspath("category-service"))
 
-from app.database import Base, get_db
 from app.main import app
-from app.routers.categories import get_current_user
-
-SQLALCHEMY_DATABASE_URL = "sqlite:///:memory:"
-
-engine = create_engine(
-    SQLALCHEMY_DATABASE_URL,
-    connect_args={"check_same_thread": False},
-    poolclass=StaticPool,
-)
-TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-
-def override_get_db():
-    db = TestingSessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
-
-def override_get_current_user():
-    return {"user_id": 1, "email": "test.user@example.com"}
-
-Base.metadata.create_all(bind=engine)
-app.dependency_overrides[get_db] = override_get_db
-app.dependency_overrides[get_current_user] = override_get_current_user
+from app.config import settings
 
 client = TestClient(app)
 
-def test_category_crud_flow():
-    # 1. Create category
-    create_res = client.post(
-        "/categories/",
-        json={"name": "Food & Dining", "type": "expense"},
-        headers={"Authorization": "Bearer fake-token"}
-    )
+def test_category_health():
+    res = client.get("/health")
+    assert res.status_code == 200
+    assert res.json()["service"] == "category"
+
+def test_category_crud_flow_header_auth():
+    headers = {"X-User-ID": "1", "X-User-Email": "test@example.com"}
+
+    # Create Category
+    cat_payload = {
+        "name": "Subscriptions",
+        "type": "expense"
+    }
+    create_res = client.post("/categories/", json=cat_payload, headers=headers)
     assert create_res.status_code == 200
-    cat = create_res.json()
-    assert cat["name"] == "Food & Dining"
-    assert cat["type"] == "expense"
-    cat_id = cat["id"]
+    category = create_res.json()
+    assert category["name"] == "Subscriptions"
+    assert category["user_id"] == 1
+    cat_id = category["id"]
 
-    # 2. Get list of categories
-    list_res = client.get("/categories/", headers={"Authorization": "Bearer fake-token"})
-    assert list_res.status_code == 200
-    categories = list_res.json()
-    assert len(categories) == 1
-    assert categories[0]["id"] == cat_id
+    # Get Categories for User 1
+    get_res = client.get("/categories/", headers=headers)
+    assert get_res.status_code == 200
+    categories = get_res.json()
+    assert len(categories) >= 1
+    assert any(c["id"] == cat_id for c in categories)
 
-    # 3. Delete category
-    del_res = client.delete(f"/categories/{cat_id}", headers={"Authorization": "Bearer fake-token"})
+    # Delete Category
+    del_res = client.delete(f"/categories/{cat_id}", headers=headers)
     assert del_res.status_code == 200
     assert del_res.json()["message"] == "Category deleted"
+
+def test_category_not_found_error():
+    headers = {"X-User-ID": "1"}
+    del_res = client.delete("/categories/99999", headers=headers)
+    assert del_res.status_code == 404
+
+def test_category_unauthorized():
+    res = client.get("/categories/")
+    assert res.status_code == 401
+
+def test_category_auth_fallback(httpx_mock):
+    httpx_mock.add_response(
+        method="GET",
+        url=f"{settings.auth_service_url}/auth/verify?token=valid_token",
+        status_code=200,
+        json={"valid": True, "user_id": 88, "email": "cat@example.com"}
+    )
+    res = client.get("/categories/", headers={"Authorization": "Bearer valid_token"})
+    assert res.status_code == 200

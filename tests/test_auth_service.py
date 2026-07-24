@@ -1,108 +1,104 @@
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
-from sqlalchemy.pool import StaticPool
-
 import sys, os
+from jose import jwt
+
 sys.path.insert(0, os.path.abspath("auth-service"))
 
-from app.database import Base, get_db
 from app.main import app
-
-SQLALCHEMY_DATABASE_URL = "sqlite:///:memory:"
-
-engine = create_engine(
-    SQLALCHEMY_DATABASE_URL,
-    connect_args={"check_same_thread": False},
-    poolclass=StaticPool,
-)
-TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-
-def override_get_db():
-    db = TestingSessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
-
-Base.metadata.create_all(bind=engine)
-app.dependency_overrides[get_db] = override_get_db
+from app.config import settings
+from app.routers.auth import hash_password, verify_password, create_token
 
 client = TestClient(app)
 
-def test_health():
-    response = client.get("/health")
-    assert response.status_code == 200
-    assert response.json()["status"] == "healthy"
+def test_auth_health_and_root():
+    res = client.get("/health")
+    assert res.status_code == 200
+    assert res.json()["service"] == "auth"
+
+def test_hash_password_truncation():
+    long_pass = "a" * 100
+    hashed = hash_password(long_pass)
+    assert verify_password(long_pass, hashed) is True
 
 def test_register_user_success():
-    response = client.post(
-        "/auth/register",
-        json={
-            "email": "john.doe@example.com",
-            "first_name": "John",
-            "last_name": "Doe",
-            "password": "securepassword123"
-        }
-    )
+    payload = {
+        "email": "john@example.com",
+        "first_name": "John",
+        "last_name": "Doe",
+        "password": "secretpassword"
+    }
+    response = client.post("/auth/register", json=payload)
     assert response.status_code == 200
     data = response.json()
-    assert data["email"] == "john.doe@example.com"
+    assert data["email"] == "john@example.com"
     assert "id" in data
 
 def test_register_user_invalid_email():
-    response = client.post(
-        "/auth/register",
-        json={
-            "email": "not-an-email",
-            "first_name": "John",
-            "last_name": "Doe",
-            "password": "securepassword123"
-        }
-    )
+    payload = {
+        "email": "not-an-email",
+        "first_name": "John",
+        "last_name": "Doe",
+        "password": "secretpassword"
+    }
+    response = client.post("/auth/register", json=payload)
     assert response.status_code == 422
 
 def test_register_user_duplicate_email():
     payload = {
         "email": "duplicate@example.com",
-        "first_name": "Jane",
-        "last_name": "Doe",
-        "password": "securepassword123"
+        "first_name": "Dup",
+        "last_name": "User",
+        "password": "password123"
     }
-    res1 = client.post("/auth/register", json=payload)
-    assert res1.status_code == 200
+    client.post("/auth/register", json=payload)
+    response = client.post("/auth/register", json=payload)
+    assert response.status_code == 400
+    assert response.json()["detail"] == "Email already registered"
 
-    res2 = client.post("/auth/register", json=payload)
-    assert res2.status_code == 400
-    assert res2.json()["detail"] == "Email already registered"
+def test_login_success_and_invalid():
+    # Register user
+    reg_data = {
+        "email": "login@example.com",
+        "first_name": "Login",
+        "last_name": "User",
+        "password": "correctpassword"
+    }
+    client.post("/auth/register", json=reg_data)
 
-def test_login_and_verify_token():
-    client.post(
-        "/auth/register",
-        json={
-            "email": "auth.user@example.com",
-            "first_name": "Auth",
-            "last_name": "User",
-            "password": "mypassword"
-        }
-    )
+    # Wrong password
+    res_wrong = client.post("/auth/login", data={"username": "login@example.com", "password": "wrong"})
+    assert res_wrong.status_code == 401
 
-    login_res = client.post(
-        "/auth/login",
-        data={"username": "auth.user@example.com", "password": "mypassword"}
-    )
-    assert login_res.status_code == 200
-    token_data = login_res.json()
-    assert "access_token" in token_data
-    token = token_data["access_token"]
+    # Wrong username
+    res_nouser = client.post("/auth/login", data={"username": "nobody@example.com", "password": "correctpassword"})
+    assert res_nouser.status_code == 401
 
-    verify_res = client.get(f"/auth/verify?token={token}")
-    assert verify_res.status_code == 200
-    assert verify_res.json()["valid"] is True
-    assert verify_res.json()["email"] == "auth.user@example.com"
+    # Correct login
+    res_ok = client.post("/auth/login", data={"username": "login@example.com", "password": "correctpassword"})
+    assert res_ok.status_code == 200
+    token = res_ok.json()["access_token"]
 
-def test_verify_invalid_token():
-    res = client.get("/auth/verify?token=invalid_token")
-    assert res.status_code == 401
-    assert res.json()["detail"] == "Invalid token"
+    # Verify token
+    ver_res = client.get(f"/auth/verify?token={token}")
+    assert ver_res.status_code == 200
+    assert ver_res.json()["email"] == "login@example.com"
+
+    # GET /auth/me
+    me_res = client.get(f"/auth/me?token={token}")
+    assert me_res.status_code == 200
+    assert me_res.json()["email"] == "login@example.com"
+
+def test_verify_and_me_invalid_tokens():
+    # Invalid token string
+    assert client.get("/auth/verify?token=invalid").status_code == 401
+    assert client.get("/auth/me?token=invalid").status_code == 401
+
+    # Token with missing 'sub'
+    token_nosub = jwt.encode({"email": "test@example.com"}, settings.secret_key, algorithm=settings.algorithm)
+    assert client.get(f"/auth/verify?token={token_nosub}").status_code == 401
+    assert client.get(f"/auth/me?token={token_nosub}").status_code == 401
+
+    # Token for non-existent user ID
+    token_nouser = jwt.encode({"sub": "99999", "email": "ghost@example.com"}, settings.secret_key, algorithm=settings.algorithm)
+    assert client.get(f"/auth/me?token={token_nouser}").status_code == 404
