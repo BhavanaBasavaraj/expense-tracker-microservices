@@ -1,9 +1,16 @@
 from fastapi import FastAPI, Request, Response, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
 import httpx
 from app.config import settings
 
+limiter = Limiter(key_func=get_remote_address, default_limits=["120/minute"])
+
 app = FastAPI(title="API Gateway", version="1.0.0")
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 app.add_middleware(
     CORSMiddleware,
@@ -34,12 +41,14 @@ async def proxy(request: Request, target_url: str):
         except httpx.RequestError as exc:
             raise HTTPException(status_code=503, detail=f"Service unavailable: {str(exc)}")
 
-# Auth routes
+# Auth routes with rate limiting
 @app.api_route("/auth/{path:path}", methods=["GET", "POST", "PUT", "DELETE"])
+@limiter.limit("10/minute")
 async def auth_proxy(path: str, request: Request):
     return await proxy(request, f"{settings.auth_service_url}/auth/{path}")
 
 @app.api_route("/auth", methods=["GET", "POST"])
+@limiter.limit("10/minute")
 async def auth_proxy_root(request: Request):
     return await proxy(request, f"{settings.auth_service_url}/auth/")
 
