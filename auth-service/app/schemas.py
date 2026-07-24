@@ -2,7 +2,7 @@ from pydantic import BaseModel, EmailStr
 from datetime import datetime
 
 class UserCreate(BaseModel):
-    email: str
+    email: EmailStr
     first_name: str
     last_name: str
     password: str

@@ -10,15 +10,19 @@ from app.config import settings
 router = APIRouter(prefix="/expenses", tags=["expenses"])
 
 async def get_current_user(authorization: str = Header(...)):
-    token = authorization.replace("Bearer ", "")
-    async with httpx.AsyncClient() as client:
-        response = await client.get(
-            f"{settings.auth_service_url}/auth/verify",
-            params={"token": token}
-        )
-        if response.status_code != 200:
-            raise HTTPException(status_code=401, detail="Invalid token")
-        return response.json()
+    token = authorization.replace("Bearer ", "").strip()
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.get(
+                f"{settings.auth_service_url}/auth/verify",
+                params={"token": token},
+                timeout=10.0
+            )
+            if response.status_code != 200:
+                raise HTTPException(status_code=401, detail="Invalid token")
+            return response.json()
+    except httpx.RequestError:
+        raise HTTPException(status_code=503, detail="Auth service unavailable")
 
 @router.get("/", response_model=List[ExpenseResponse])
 async def get_expenses(
@@ -35,7 +39,8 @@ async def create_expense(
     db: Session = Depends(get_db),
     current_user: dict = Depends(get_current_user)
 ):
-    new_expense = Expense(**expense.dict(), user_id=current_user["user_id"])
+    data = expense.model_dump() if hasattr(expense, "model_dump") else expense.dict()
+    new_expense = Expense(**data, user_id=current_user["user_id"])
     db.add(new_expense)
     db.commit()
     db.refresh(new_expense)
@@ -54,7 +59,8 @@ async def update_expense(
     ).first()
     if not db_expense:
         raise HTTPException(status_code=404, detail="Expense not found")
-    for key, value in expense.dict().items():
+    data = expense.model_dump() if hasattr(expense, "model_dump") else expense.dict()
+    for key, value in data.items():
         setattr(db_expense, key, value)
     db.commit()
     db.refresh(db_expense)
