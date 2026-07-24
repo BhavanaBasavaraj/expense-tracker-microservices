@@ -96,5 +96,12 @@ services:
       - analytics-service
       - redis
 
+  frontend:
+    build: ./frontend
+    ports:
+      - "3000:80"
+    depends_on:
+      - api-gateway
+
 volumes:
   postgres_data:
