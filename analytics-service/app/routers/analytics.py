@@ -5,23 +5,36 @@ from app.config import settings
 router = APIRouter(prefix="/analytics", tags=["analytics"])
 
 async def get_current_user(authorization: str = Header(...)):
-    token = authorization.replace("Bearer ", "")
-    async with httpx.AsyncClient() as client:
-        response = await client.get(
-            f"{settings.auth_service_url}/auth/verify",
-            params={"token": token}
-        )
-        if response.status_code != 200:
-            raise HTTPException(status_code=401, detail="Invalid token")
-        return response.json()
+    token = authorization.replace("Bearer ", "").strip()
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.get(
+                f"{settings.auth_service_url}/auth/verify",
+                params={"token": token},
+                timeout=10.0
+            )
+            if response.status_code != 200:
+                raise HTTPException(status_code=401, detail="Invalid token")
+            return response.json()
+    except httpx.RequestError:
+        raise HTTPException(status_code=503, detail="Auth service unavailable")
 
 async def get_expenses(token: str, user_id: int):
-    async with httpx.AsyncClient() as client:
-        response = await client.get(
-            f"{settings.expense_service_url}/expenses/",
-            headers={"Authorization": f"Bearer {token}"}
-        )
-        return response.json()
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.get(
+                f"{settings.expense_service_url}/expenses/",
+                headers={"Authorization": f"Bearer {token}"},
+                timeout=10.0
+            )
+            if response.status_code != 200:
+                raise HTTPException(status_code=response.status_code, detail="Failed to fetch expenses")
+            data = response.json()
+            if not isinstance(data, list):
+                raise HTTPException(status_code=500, detail="Invalid response format from expense service")
+            return data
+    except httpx.RequestError:
+        raise HTTPException(status_code=503, detail="Expense service unavailable")
 
 @router.get("/dashboard")
 async def dashboard(
