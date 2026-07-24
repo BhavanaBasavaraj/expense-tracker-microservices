@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException, Header
 from sqlalchemy.orm import Session
-from typing import List
+from typing import List, Optional
 import httpx
 from app.database import get_db
 from app.models import Category
@@ -9,20 +9,28 @@ from app.config import settings
 
 router = APIRouter(prefix="/categories", tags=["categories"])
 
-async def get_current_user(authorization: str = Header(...)):
-    token = authorization.replace("Bearer ", "").strip()
-    try:
-        async with httpx.AsyncClient() as client:
-            response = await client.get(
-                f"{settings.auth_service_url}/auth/verify",
-                params={"token": token},
-                timeout=10.0
-            )
-            if response.status_code != 200:
-                raise HTTPException(status_code=401, detail="Invalid token")
-            return response.json()
-    except httpx.RequestError:
-        raise HTTPException(status_code=503, detail="Auth service unavailable")
+async def get_current_user(
+    x_user_id: Optional[int] = Header(None, alias="X-User-ID"),
+    x_user_email: Optional[str] = Header(None, alias="X-User-Email"),
+    authorization: Optional[str] = Header(None)
+):
+    if x_user_id is not None:
+        return {"user_id": x_user_id, "email": x_user_email or ""}
+    
+    if authorization:
+        token = authorization.replace("Bearer ", "").strip()
+        try:
+            async with httpx.AsyncClient() as client:
+                response = await client.get(
+                    f"{settings.auth_service_url}/auth/verify",
+                    params={"token": token},
+                    timeout=10.0
+                )
+                if response.status_code == 200:
+                    return response.json()
+        except httpx.RequestError:
+            pass
+    raise HTTPException(status_code=401, detail="Invalid or missing authentication credentials")
 
 @router.get("/", response_model=List[CategoryResponse])
 async def get_categories(

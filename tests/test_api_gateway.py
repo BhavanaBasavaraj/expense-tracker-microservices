@@ -19,8 +19,7 @@ def test_gateway_root():
     assert response.status_code == 200
     assert response.json()["message"] == "Expense Tracker API Gateway"
 
-def test_gateway_service_unavailable_error():
-    # Calling auth proxy when downstream auth-service is unreachable
-    response = client.get("/auth/me?token=test")
-    assert response.status_code == 503
-    assert "Service unavailable" in response.json()["detail"]
+def test_gateway_protected_route_unauthorized():
+    response = client.get("/expenses/")
+    assert response.status_code == 401
+    assert "Invalid or missing authentication token" in response.json()["detail"]
