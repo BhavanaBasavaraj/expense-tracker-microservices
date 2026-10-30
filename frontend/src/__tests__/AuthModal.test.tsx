@@ -24,4 +24,15 @@ describe('AuthModal Component', () => {
     expect(screen.getByPlaceholderText('Doe')).toBeTruthy();
     expect(screen.getByRole('button', { name: /Create Account/i })).toBeTruthy();
   });
+
+  it('asks for at least 8 characters only when registering', () => {
+    render(<AuthModal onSuccess={vi.fn()} />);
+    const loginPassword = screen.getByPlaceholderText('••••••••') as HTMLInputElement;
+    expect(loginPassword.minLength).toBeLessThanOrEqual(0); // sign in: do not block existing users
+
+    fireEvent.click(screen.getByRole('button', { name: 'Register' }));
+    const registerPassword = screen.getByPlaceholderText('At least 8 characters') as HTMLInputElement;
+    expect(registerPassword.minLength).toBe(8);
+    expect(registerPassword.maxLength).toBe(72);
+  });
 });
