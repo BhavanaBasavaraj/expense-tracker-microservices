@@ -1,8 +1,8 @@
 # 💰 Expense Tracker Microservices Platform
 
 [![CI/CD Pipeline](https://github.com/BhavanaBasavaraj/expense-tracker-microservices/actions/workflows/ci.yml/badge.svg)](https://github.com/BhavanaBasavaraj/expense-tracker-microservices/actions/workflows/ci.yml)
-[![Coverage Target](https://img.shields.io/badge/Coverage->95%25-brightgreen.svg)](./run_tests.sh)
-[![Docker Compose](https://img.shields.io/badge/Docker%20Compose-v3.8-blue.svg)](./docker-compose.yml)
+[![Coverage Gate](https://img.shields.io/badge/coverage%20gate-%E2%89%A595%25%20per%20service-brightgreen.svg)](./run_tests.sh)
+[![Docker Compose](https://img.shields.io/badge/Docker-Compose-blue.svg)](./docker-compose.yml)
 [![License](https://img.shields.io/badge/License-MIT-purple.svg)](LICENSE)
 
 A production-ready, cloud-native microservices application built with **FastAPI**, **PostgreSQL**, **Redis**, **Alembic**, and a **Vite / React / TypeScript** web dashboard. 
@@ -56,15 +56,17 @@ Modal interface for recording income and expense entries with custom categories.
 ```
 
 1. **Centralized Gateway Authentication:**
-   - **API Gateway (`port 8000`)** verifies JWT tokens centrally and sanitizes incoming HTTP headers.
-   - Verified `X-User-ID` and `X-User-Email` headers are passed to downstream microservices, eliminating 100% of inter-service auth HTTP round-trips.
+   - The **API Gateway (`port 8000`)** is the only component that verifies JWTs. It strips any client-supplied `X-User-ID`, `X-User-Email`, `X-Internal-Key` and `Authorization` headers, then forwards the verified identity plus a shared `X-Internal-Key`.
+   - Expense, category and analytics services trust identity headers **only** when they arrive with that key (compared in constant time; they fail closed if it is unset). They never call the auth service, so a request costs zero inter-service auth round-trips.
+   - Defence in depth: the internal services are not published to the host in `docker-compose.yml`, and the tests assert that forged headers, wrong keys and bare bearer tokens are rejected.
 
-2. **Database Migrations & Resilience:**
-   - Database schema migrations managed via **Alembic** for `auth-service`, `expense-service`, and `category-service`.
-   - Entrypoint scripts automatically execute `alembic upgrade head` on startup.
+2. **Database Migrations:**
+   - Schema migrations managed via **Alembic** for `auth-service`, `expense-service`, and `category-service`; entrypoint scripts run `alembic upgrade head` on startup.
+   - Tests apply the migrations, assert the resulting schema, fail if the SQLAlchemy models drift from the migrations, and check that downgrade removes everything.
 
-3. **Rate Limiting & Caching:**
-   - **Redis (`port 6379`)** integration with `Slowapi` rate-limiting on authentication endpoints (`10 req/min`).
+3. **Rate Limiting:**
+   - `slowapi` limits authentication endpoints to `10 req/min` with counters stored in **Redis**, so limits hold across gateway instances.
+   - The gateway refuses to start if Redis is configured but unreachable (there is deliberately no silent in-memory fallback), and `/health` reports Redis status.
 
 4. **Modern Frontend Web Application:**
    - **React 18 + Vite 5 + TypeScript** web application styled with glassmorphism design system.
@@ -72,7 +74,7 @@ Modal interface for recording income and expense entries with custom categories.
    - One-click CSV financial log exports.
 
 5. **Hardened Unprivileged Docker Containers:**
-   - 2-stage multi-stage builds running under non-root `appuser:appgroup`.
+   - The five Python services use 2-stage builds and run as non-root `appuser` (uid 10001). The frontend image is multi-stage but serves via stock nginx (root).
 
 ---
 
@@ -80,37 +82,38 @@ Modal interface for recording income and expense entries with custom categories.
 
 ### Running with Docker Compose (Recommended)
 
-To start the entire microservices stack (PostgreSQL, Redis, Auth, Expense, Category, Analytics, API Gateway, and Frontend):
-
 ```bash
-docker-compose up --build
+cp .env.example .env        # then set real values (openssl rand -hex 32)
+docker compose up --build
 ```
 
-Access services locally:
+Without a `.env`, compose falls back to throwaway development defaults. Never deploy with those.
+
+Reachable from the host:
 - 🌐 **Web Dashboard:** `http://localhost:3000`
 - ⚙️ **API Gateway:** `http://localhost:8000`
-- 🔒 **Auth Service:** `http://localhost:8001`
-- 💸 **Expense Service:** `http://localhost:8002`
-- 🏷️ **Category Service:** `http://localhost:8003`
-- 📊 **Analytics Service:** `http://localhost:8004`
+- 🗄️ Postgres `127.0.0.1:5433` and Redis `127.0.0.1:6379` (loopback only, for debugging)
+
+The auth, expense, category and analytics services are only reachable inside the Docker network, through the gateway.
+
+With the stack running, `./scripts/smoke_test.sh` registers two users and checks the full flow, including tenant isolation and forged-header rejection.
 
 ---
 
-## 🧪 Testing & Code Coverage (>95% Threshold)
+## 🧪 Testing & Code Coverage
 
-### Running Backend Python Unit & Integration Tests
+### Backend (pytest)
 
 ```bash
-./run_tests.sh
+pip install -r auth-service/requirements.txt -r expense-service/requirements.txt \
+            -r category-service/requirements.txt -r analytics-service/requirements.txt \
+            -r api-gateway/requirements.txt -r requirements-dev.txt
+./run_tests.sh                                   # add REDIS_TEST_URL=redis://localhost:6379/15 for the real-Redis test
 ```
 
-Our automated script enforces `--cov-fail-under=95` code coverage across all microservices:
-- **Auth Service:** 100.00% Coverage
-- **Expense Service:** 98.31% Coverage
-- **Category Service:** 97.87% Coverage
-- **Analytics Service:** 97.78% Coverage
-- **API Gateway:** 96.49% Coverage
-- **Alembic Migrations:** 100% Verified
+`run_tests.sh` fails if any service drops below **95%** line coverage. GitHub Actions (`.github/workflows/ci.yml`) runs the same script plus the frontend tests/build and a full `docker compose` smoke test on every push and pull request.
+
+Beyond happy paths, the suites check: cross-user read/update/delete isolation, request-body ownership spoofing, forged identity headers, wrong-secret / `alg=none` / expired JWTs, the 429 after 10 auth requests, and a real Redis round-trip.
 
 ### Running Frontend Component Tests
 

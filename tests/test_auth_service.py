@@ -102,3 +102,20 @@ def test_verify_and_me_invalid_tokens():
     # Token for non-existent user ID
     token_nouser = jwt.encode({"sub": "99999", "email": "ghost@example.com"}, settings.secret_key, algorithm=settings.algorithm)
     assert client.get(f"/auth/me?token={token_nouser}").status_code == 404
+
+
+def test_register_response_never_contains_password_material():
+    res = client.post("/auth/register", json={
+        "email": "nohash@example.com", "first_name": "No", "last_name": "Hash", "password": "secretpassword"})
+    assert res.status_code == 200
+    body = res.json()
+    assert "password" not in body and "hashed_password" not in body
+    assert "secretpassword" not in res.text
+
+
+def test_issued_tokens_expire():
+    client.post("/auth/register", json={
+        "email": "exp@example.com", "first_name": "E", "last_name": "X", "password": "correctpassword"})
+    token = client.post("/auth/login", data={"username": "exp@example.com", "password": "correctpassword"}).json()["access_token"]
+    claims = jwt.decode(token, settings.secret_key, algorithms=[settings.algorithm])
+    assert "exp" in claims  # a token without expiry would be valid forever
