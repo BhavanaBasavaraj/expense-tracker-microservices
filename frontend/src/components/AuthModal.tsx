@@ -184,9 +184,11 @@ export const AuthModal: React.FC<AuthModalProps> = ({ onSuccess }) => {
               <input
                 type="password"
                 required
+                minLength={isLogin ? undefined : 8}
+                maxLength={72}
                 className="form-input"
                 style={{ paddingLeft: '36px' }}
-                placeholder="••••••••"
+                placeholder={isLogin ? '••••••••' : 'At least 8 characters'}
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
               />

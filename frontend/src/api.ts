@@ -2,6 +2,22 @@ import { User, Category, Expense, AnalyticsSummary, CategoryBreakdown, MonthlyBr
 
 const API_BASE_URL = 'http://localhost:8000';
 
+// FastAPI returns `detail` as a string for most errors, but as a list of
+// {loc, msg, ...} objects for request validation (422). Turn either into readable text.
+export async function errorFrom(response: Response, fallback: string): Promise<Error> {
+  try {
+    const body = await response.json();
+    const detail = body?.detail;
+    if (typeof detail === 'string' && detail) return new Error(detail);
+    if (Array.isArray(detail) && detail.length > 0) {
+      return new Error(detail.map((d: any) => d?.msg ?? String(d)).join('; '));
+    }
+  } catch {
+    // body was not JSON; use the fallback
+  }
+  return new Error(fallback);
+}
+
 function getAuthHeaders(token: string | null): Record<string, string> {
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
@@ -19,8 +35,7 @@ export async function registerUser(payload: { email: string; first_name: string;
     body: JSON.stringify(payload),
   });
   if (!response.ok) {
-    const err = await response.json();
-    throw new Error(err.detail || 'Registration failed');
+    throw await errorFrom(response, 'Registration failed');
   }
   return response.json();
 }
@@ -36,8 +51,7 @@ export async function loginUser(email: string, password: string): Promise<{ acce
     body: formData.toString(),
   });
   if (!response.ok) {
-    const err = await response.json();
-    throw new Error(err.detail || 'Login failed');
+    throw await errorFrom(response, 'Login failed');
   }
   return response.json();
 }
@@ -69,8 +83,7 @@ export async function createExpense(token: string, payload: Omit<Expense, 'id' |
     body: JSON.stringify(payload),
   });
   if (!response.ok) {
-    const err = await response.json();
-    throw new Error(err.detail || 'Failed to create expense');
+    throw await errorFrom(response, 'Failed to create expense');
   }
   return response.json();
 }
@@ -102,8 +115,7 @@ export async function createCategory(token: string, payload: { name: string; typ
     body: JSON.stringify(payload),
   });
   if (!response.ok) {
-    const err = await response.json();
-    throw new Error(err.detail || 'Failed to create category');
+    throw await errorFrom(response, 'Failed to create category');
   }
   return response.json();
 }

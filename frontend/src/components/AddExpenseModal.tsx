@@ -127,6 +127,7 @@ export const AddExpenseModal: React.FC<AddExpenseModalProps> = ({ categories, on
                 <input
                   type="number"
                   step="0.01"
+                  min="0.01"
                   required
                   className="form-input"
                   style={{ paddingLeft: '34px' }}

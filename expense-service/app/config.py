@@ -2,7 +2,9 @@ from pydantic_settings import BaseSettings
 
 class Settings(BaseSettings):
     database_url: str = "postgresql://bhavana:postgres@localhost:5432/expense_db"
-    auth_service_url: str = "http://auth-service:8001"
+
+    # Shared secret the API gateway attaches to proxied requests. Empty = fail closed.
+    internal_api_key: str = ""
 
     class Config:
         env_file = ".env"

@@ -1,9 +1,12 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, Field
 from datetime import datetime
+from typing import Literal
 
 class CategoryCreate(BaseModel):
-    name: str
-    type: str
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    name: str = Field(min_length=1, max_length=100)
+    type: Literal["income", "expense"]
 
 class CategoryResponse(BaseModel):
     id: int

@@ -8,6 +8,10 @@ class Settings(BaseSettings):
     redis_url: str = "redis://redis:6379/0"
     secret_key: str = "supersecretkey123"
     algorithm: str = "HS256"
+    # Shared secret attached to proxied requests so services can reject direct callers.
+    internal_api_key: str = ""
+    # Comma-separated browser origins allowed to call the gateway (the web dashboard).
+    cors_origins: str = "http://localhost:3000,http://127.0.0.1:3000"
 
     class Config:
         env_file = ".env"

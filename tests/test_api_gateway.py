@@ -50,7 +50,11 @@ def test_gateway_proxy_success(httpx_mock):
     with TestClient(app) as client:
         response = client.get(
             "/expenses/",
-            headers={"Authorization": f"Bearer {token}", "X-User-ID": "spoofed_id"}
+            headers={
+                "Authorization": f"Bearer {token}",
+                "X-User-ID": "spoofed_id",
+                "X-Internal-Key": "client-supplied-guess",
+            }
         )
         assert response.status_code == 200
         assert response.json() == [{"id": 1, "title": "Coffee", "amount": 5.0}]
@@ -58,6 +62,10 @@ def test_gateway_proxy_success(httpx_mock):
         request = httpx_mock.get_request()
         assert request.headers["X-User-ID"] == "10"
         assert request.headers["X-User-Email"] == "proxy@example.com"
+        # The gateway, not the client, decides the internal key; the raw token is not forwarded.
+        assert request.headers["X-Internal-Key"] == settings.internal_api_key
+        assert request.headers["X-Internal-Key"] != "client-supplied-guess"
+        assert "authorization" not in request.headers
 
 def test_gateway_proxy_fallback_temp_client(httpx_mock):
     token = create_valid_token(10, "fallback@example.com")
@@ -167,6 +175,7 @@ def test_gateway_health_with_lifespan(httpx_mock):
         assert data["services"]["expense"] == "unhealthy"
         assert data["services"]["category"] == "healthy"
         assert data["services"]["analytics"] == "unreachable"
+        assert data["services"]["redis"] == "memory"  # unit tests use memory:// storage
 
 def test_gateway_health_fallback_temp_client(httpx_mock):
     if hasattr(app.state, "http_client"):
@@ -181,3 +190,107 @@ def test_gateway_health_fallback_temp_client(httpx_mock):
     response = client.get("/health")
     assert response.status_code == 200
     assert response.json()["services"]["auth"] == "healthy"
+
+
+# ------------------------------------------------------------------ auth strength
+
+def test_token_signed_with_wrong_secret_is_rejected():
+    forged = jwt.encode({"sub": "1", "email": "x@y.z"}, "not-the-real-secret", algorithm="HS256")
+    assert verify_and_extract_claims(f"Bearer {forged}") is None
+    with TestClient(app) as client:
+        assert client.get("/expenses/", headers={"Authorization": f"Bearer {forged}"}).status_code == 401
+
+
+def test_unsigned_alg_none_token_is_rejected():
+    import base64, json
+    def b64(d):
+        return base64.urlsafe_b64encode(json.dumps(d).encode()).rstrip(b"=").decode()
+    unsigned = f"{b64({'alg': 'none', 'typ': 'JWT'})}.{b64({'sub': '1'})}."
+    assert verify_and_extract_claims(f"Bearer {unsigned}") is None
+
+
+def test_expired_token_is_rejected():
+    expired = jwt.encode({"sub": "1", "email": "x@y.z", "exp": 1}, settings.secret_key, algorithm=settings.algorithm)
+    assert verify_and_extract_claims(f"Bearer {expired}") is None
+
+
+def test_client_cannot_inject_identity_without_a_token(httpx_mock):
+    """Forged X-User-ID with no valid token must not reach a protected service at all."""
+    with TestClient(app) as client:
+        res = client.get("/expenses/", headers={"X-User-ID": "1", "X-Internal-Key": settings.internal_api_key})
+    assert res.status_code == 401
+    assert httpx_mock.get_requests() == []
+
+
+# ------------------------------------------------------------------ rate limiting + redis
+
+def test_auth_endpoints_are_rate_limited_at_10_per_minute(httpx_mock):
+    from app.main import limiter
+    limiter.reset()
+    httpx_mock.add_response(method="POST", url=f"{settings.auth_service_url}/auth/login",
+                            status_code=401, is_reusable=True, json={"detail": "nope"})
+    with TestClient(app) as client:
+        statuses = [client.post("/auth/login", json={}).status_code for _ in range(12)]
+    assert statuses[:10] == [401] * 10
+    assert statuses[10:] == [429, 429]
+    limiter.reset()
+
+
+def test_check_redis_raises_when_redis_is_unreachable():
+    from app.main import check_redis
+    with pytest.raises(Exception):
+        check_redis("redis://127.0.0.1:1/0")  # nothing listens on port 1
+
+
+def test_gateway_refuses_to_start_when_redis_is_unreachable(monkeypatch):
+    monkeypatch.setattr(settings, "redis_url", "redis://127.0.0.1:1/0")
+    with pytest.raises(Exception):
+        with TestClient(app):
+            pass
+
+
+def test_gateway_refuses_to_start_without_internal_key(monkeypatch):
+    monkeypatch.setattr(settings, "internal_api_key", "")
+    with pytest.raises(RuntimeError, match="INTERNAL_API_KEY"):
+        with TestClient(app):
+            pass
+
+
+def test_health_reports_redis_unreachable_instead_of_hiding_it(httpx_mock, monkeypatch):
+    for svc in (settings.auth_service_url, settings.expense_service_url,
+                settings.category_service_url, settings.analytics_service_url):
+        httpx_mock.add_response(url=f"{svc}/health", status_code=200)
+    with TestClient(app) as client:  # starts fine on memory://
+        monkeypatch.setattr(settings, "redis_url", "redis://127.0.0.1:1/0")
+        data = client.get("/health").json()
+    assert data["services"]["redis"] == "unreachable"
+
+
+# ------------------------------------------------------------------ CORS
+
+def preflight(origin):
+    with TestClient(app) as client:
+        return client.options("/expenses/", headers={
+            "Origin": origin,
+            "Access-Control-Request-Method": "GET",
+            "Access-Control-Request-Headers": "authorization",
+        })
+
+
+def test_cors_allows_the_dashboard_origin():
+    res = preflight("http://localhost:3000")
+    assert res.status_code == 200
+    assert res.headers["access-control-allow-origin"] == "http://localhost:3000"
+    # Bearer-header auth only: credentialed (cookie) cross-origin requests are not enabled.
+    assert "access-control-allow-credentials" not in res.headers
+
+
+def test_cors_rejects_other_origins():
+    res = preflight("https://evil.example")
+    assert "access-control-allow-origin" not in res.headers
+    assert res.status_code == 400  # starlette rejects the disallowed preflight
+
+
+def test_cors_is_not_a_wildcard():
+    res = preflight("http://localhost:3000")
+    assert res.headers["access-control-allow-origin"] != "*"

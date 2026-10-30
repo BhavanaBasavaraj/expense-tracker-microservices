@@ -1,43 +1,30 @@
+import json
+import subprocess
+import sys
+
 import pytest
-import os
-from alembic.config import Config
-from alembic import command
 
-def test_auth_service_alembic_migrations(tmp_path):
-    db_file = tmp_path / "auth_alembic_test.db"
-    db_url = f"sqlite:///{db_file}"
-    
-    config = Config("auth-service/alembic.ini")
-    config.set_main_option("script_location", "auth-service/alembic")
-    config.set_main_option("sqlalchemy.url", db_url)
-    
-    command.upgrade(config, "head")
-    assert db_file.exists()
+EXPECTED = {
+    "auth-service": ("users", {"id", "email", "first_name", "last_name", "hashed_password", "created_at"}),
+    "expense-service": ("expenses", {"id", "user_id", "category_id", "title", "amount", "type", "date", "description", "created_at"}),
+    "category-service": ("categories", {"id", "user_id", "name", "type", "created_at"}),
+}
 
-    command.downgrade(config, "base")
 
-def test_expense_service_alembic_migrations(tmp_path):
-    db_file = tmp_path / "expense_alembic_test.db"
-    db_url = f"sqlite:///{db_file}"
-    
-    config = Config("expense-service/alembic.ini")
-    config.set_main_option("script_location", "expense-service/alembic")
-    config.set_main_option("sqlalchemy.url", db_url)
-    
-    command.upgrade(config, "head")
-    assert db_file.exists()
+@pytest.mark.parametrize("service", sorted(EXPECTED))
+def test_migrations_create_the_schema_the_models_expect(service, tmp_path):
+    table, expected_columns = EXPECTED[service]
+    db_url = f"sqlite:///{tmp_path / 'm.db'}"
+    out = subprocess.run(
+        [sys.executable, "tests/_alembic_inspect.py", service, db_url],
+        capture_output=True, text=True, cwd=".",
+    )
+    assert out.returncode == 0, out.stderr
+    upgraded, downgraded = [json.loads(line) for line in out.stdout.strip().splitlines()[-2:]]
 
-    command.downgrade(config, "base")
-
-def test_category_service_alembic_migrations(tmp_path):
-    db_file = tmp_path / "category_alembic_test.db"
-    db_url = f"sqlite:///{db_file}"
-    
-    config = Config("category-service/alembic.ini")
-    config.set_main_option("script_location", "category-service/alembic")
-    config.set_main_option("sqlalchemy.url", db_url)
-    
-    command.upgrade(config, "head")
-    assert db_file.exists()
-
-    command.downgrade(config, "base")
+    assert upgraded["tables"] == [table]
+    assert set(upgraded["columns"][table]) == expected_columns
+    # Models and migrations agree: a model change without a new migration fails here.
+    assert upgraded["drift"] == [], f"models and migrations have drifted: {upgraded['drift']}"
+    # Downgrade really removes what upgrade created.
+    assert downgraded["after_downgrade"] == []
