@@ -21,8 +21,8 @@ from alembic.runtime.migration import MigrationContext
 from sqlalchemy import create_engine, inspect
 
 cfg = Config("alembic.ini")
-cfg.set_main_option("script_location", "alembic")
-cfg.set_main_option("sqlalchemy.url", db_url)
+# The database URL is NOT injected into the alembic config here. It must come from the
+# DATABASE_URL env var, exactly as it does inside a container (injecting it hid a real bug).
 command.upgrade(cfg, "head")
 
 from app.database import Base

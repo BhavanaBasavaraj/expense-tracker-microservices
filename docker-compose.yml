@@ -24,10 +24,12 @@ services:
       - postgres_data:/var/lib/postgresql/data
       - ./init.sql:/docker-entrypoint-initdb.d/init.sql
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U bhavana -d auth_db"]
+      # pg_isready alone passes during first-boot init, before init.sql has created
+      # expense_db/category_db. Query each database so "healthy" means "ready to use".
+      test: ["CMD-SHELL", "for db in auth_db expense_db category_db; do psql -U bhavana -d $$db -tAc 'select 1' >/dev/null || exit 1; done"]
       interval: 5s
       timeout: 5s
-      retries: 5
+      retries: 12
 
   redis:
     image: redis:7-alpine
