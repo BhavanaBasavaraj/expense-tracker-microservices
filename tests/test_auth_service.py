@@ -119,3 +119,37 @@ def test_issued_tokens_expire():
     token = client.post("/auth/login", data={"username": "exp@example.com", "password": "correctpassword"}).json()["access_token"]
     claims = jwt.decode(token, settings.secret_key, algorithms=[settings.algorithm])
     assert "exp" in claims  # a token without expiry would be valid forever
+
+
+# ------------------------------------------------------------------ password policy
+
+def _register(password, email):
+    return client.post("/auth/register", json={
+        "email": email, "first_name": "P", "last_name": "W", "password": password})
+
+
+def test_short_passwords_are_rejected():
+    assert _register("1234567", "short@example.com").status_code == 422   # 7 chars
+    assert _register("", "empty@example.com").status_code == 422
+
+
+def test_minimum_length_password_is_accepted_and_can_log_in():
+    assert _register("12345678", "min8@example.com").status_code == 200   # exactly 8
+    ok = client.post("/auth/login", data={"username": "min8@example.com", "password": "12345678"})
+    assert ok.status_code == 200
+
+
+def test_passwords_beyond_bcrypts_72_byte_limit_are_rejected_not_silently_truncated():
+    assert _register("a" * 73, "long73@example.com").status_code == 422
+    assert _register("a" * 72, "long72@example.com").status_code == 200
+
+
+def test_blank_names_are_rejected():
+    res = client.post("/auth/register", json={
+        "email": "blank@example.com", "first_name": "", "last_name": "X", "password": "password123"})
+    assert res.status_code == 422
+
+
+def test_internal_service_sends_no_cors_headers():
+    res = client.options("/auth/login", headers={"Origin": "https://evil.example", "Access-Control-Request-Method": "POST"})
+    assert "access-control-allow-origin" not in res.headers

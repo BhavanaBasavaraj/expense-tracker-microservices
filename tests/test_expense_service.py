@@ -134,3 +134,52 @@ def test_bearer_token_alone_is_not_accepted_and_auth_service_is_not_called(httpx
 
 def test_expense_unauthorized():
     assert client.get("/expenses/").status_code == 401
+
+
+# ------------------------------------------------------------------ input validation
+
+@pytest.mark.parametrize("field,value", [
+    ("type", "transfer"),          # only income / expense exist
+    ("type", ""),
+    ("date", "yesterday"),
+    ("date", "2026-13-45"),        # not a calendar date
+    ("date", "2026-02-30"),
+    ("amount", 0),
+    ("amount", -5.0),
+    ("title", ""),
+    ("title", "   "),              # whitespace only
+    ("title", "x" * 201),
+])
+def test_invalid_expense_is_rejected_on_create_and_update(field, value):
+    bad = payload()
+    bad[field] = value
+    assert client.post("/expenses/", json=bad, headers=gw(50)).status_code == 422
+
+    good_id = client.post("/expenses/", json=payload("valid"), headers=gw(50)).json()["id"]
+    assert client.put(f"/expenses/{good_id}", json=bad, headers=gw(50)).status_code == 422
+    # and the rejected update changed nothing
+    stored = [e for e in client.get("/expenses/", headers=gw(50)).json() if e["id"] == good_id][0]
+    assert stored["title"] == "valid"
+
+
+def test_non_finite_amounts_are_rejected():
+    from app.schemas import ExpenseCreate
+    from pydantic import ValidationError
+    for bad in (float("nan"), float("inf"), float("-inf")):
+        with pytest.raises(ValidationError):
+            ExpenseCreate(title="t", amount=bad, type="expense", date="2026-01-01")
+
+
+def test_valid_dates_are_normalised_and_income_accepted():
+    body = payload("Paycheck", 3000.0)
+    body["type"] = "income"
+    body["date"] = "2026-07-04"
+    res = client.post("/expenses/", json=body, headers=gw(51))
+    assert res.status_code == 200
+    assert res.json()["date"] == "2026-07-04" and res.json()["type"] == "income"
+
+
+def test_internal_service_sends_no_cors_headers():
+    # Only the gateway talks to browsers; this service must not invite cross-origin calls.
+    res = client.options("/expenses/", headers={"Origin": "https://evil.example", "Access-Control-Request-Method": "GET"})
+    assert "access-control-allow-origin" not in res.headers

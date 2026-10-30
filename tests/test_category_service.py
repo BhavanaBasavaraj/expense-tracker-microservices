@@ -92,3 +92,21 @@ def test_bearer_token_alone_is_not_accepted_and_auth_service_is_not_called(httpx
 
 def test_category_unauthorized():
     assert client.get("/categories/").status_code == 401
+
+
+# ------------------------------------------------------------------ input validation
+
+@pytest.mark.parametrize("body", [
+    {"name": "Food", "type": "transfer"},
+    {"name": "Food", "type": ""},
+    {"name": "", "type": "expense"},
+    {"name": "   ", "type": "expense"},
+    {"name": "x" * 101, "type": "expense"},
+])
+def test_invalid_category_is_rejected(body):
+    assert client.post("/categories/", json=body, headers=gw(60)).status_code == 422
+
+
+def test_internal_service_sends_no_cors_headers():
+    res = client.options("/categories/", headers={"Origin": "https://evil.example", "Access-Control-Request-Method": "GET"})
+    assert "access-control-allow-origin" not in res.headers

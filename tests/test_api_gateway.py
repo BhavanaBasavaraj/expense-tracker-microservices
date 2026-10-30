@@ -264,3 +264,33 @@ def test_health_reports_redis_unreachable_instead_of_hiding_it(httpx_mock, monke
         monkeypatch.setattr(settings, "redis_url", "redis://127.0.0.1:1/0")
         data = client.get("/health").json()
     assert data["services"]["redis"] == "unreachable"
+
+
+# ------------------------------------------------------------------ CORS
+
+def preflight(origin):
+    with TestClient(app) as client:
+        return client.options("/expenses/", headers={
+            "Origin": origin,
+            "Access-Control-Request-Method": "GET",
+            "Access-Control-Request-Headers": "authorization",
+        })
+
+
+def test_cors_allows_the_dashboard_origin():
+    res = preflight("http://localhost:3000")
+    assert res.status_code == 200
+    assert res.headers["access-control-allow-origin"] == "http://localhost:3000"
+    # Bearer-header auth only: credentialed (cookie) cross-origin requests are not enabled.
+    assert "access-control-allow-credentials" not in res.headers
+
+
+def test_cors_rejects_other_origins():
+    res = preflight("https://evil.example")
+    assert "access-control-allow-origin" not in res.headers
+    assert res.status_code == 400  # starlette rejects the disallowed preflight
+
+
+def test_cors_is_not_a_wildcard():
+    res = preflight("http://localhost:3000")
+    assert res.headers["access-control-allow-origin"] != "*"
