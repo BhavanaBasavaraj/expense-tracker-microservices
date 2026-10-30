@@ -3,9 +3,8 @@
 [![CI/CD Pipeline](https://github.com/BhavanaBasavaraj/expense-tracker-microservices/actions/workflows/ci.yml/badge.svg)](https://github.com/BhavanaBasavaraj/expense-tracker-microservices/actions/workflows/ci.yml)
 [![Coverage Gate](https://img.shields.io/badge/coverage%20gate-%E2%89%A595%25%20per%20service-brightgreen.svg)](./run_tests.sh)
 [![Docker Compose](https://img.shields.io/badge/Docker-Compose-blue.svg)](./docker-compose.yml)
-[![License](https://img.shields.io/badge/License-MIT-purple.svg)](LICENSE)
 
-A production-ready, cloud-native microservices application built with **FastAPI**, **PostgreSQL**, **Redis**, **Alembic**, and a **Vite / React / TypeScript** web dashboard. 
+A microservices expense tracker built with **FastAPI**, **PostgreSQL**, **Redis**, **Alembic**, and a **Vite / React / TypeScript** web dashboard. 
 
 ---
 
@@ -73,8 +72,14 @@ Modal interface for recording income and expense entries with custom categories.
    - Recharts visual charts for category spending breakdown & monthly income vs expenses.
    - One-click CSV financial log exports.
 
-5. **Hardened Unprivileged Docker Containers:**
-   - The five Python services use 2-stage builds and run as non-root `appuser` (uid 10001). The frontend image is multi-stage but serves via stock nginx (root).
+5. **Unprivileged Docker Containers:**
+   - The five Python services use 2-stage builds and run as non-root `appuser` (uid 10001).
+   - The dashboard is built with Node, then served by the official `nginx-unprivileged` image (non-root, port 8080 inside the container, mapped to 3000 on the host).
+
+6. **Input Validation & Browser Security:**
+   - Passwords must be 8 to 72 characters (72 is bcrypt's real limit, so nothing is silently truncated). Transaction and category `type` must be `income` or `expense`, `date` must be a real `YYYY-MM-DD` date, `amount` must be positive and finite, and blank titles/names are rejected.
+   - The gateway's CORS policy is an explicit origin allowlist (`CORS_ORIGINS`, default `http://localhost:3000`), not `*`, with credentialed requests off because the dashboard uses a bearer header, not cookies. The internal services send no CORS headers at all.
+   - The dashboard shows validation errors as readable text.
 
 ---
 
@@ -124,6 +129,15 @@ npm test
 
 ---
 
+## ⚠️ Known Limitations
+
+- **Service-to-service trust is a shared secret, not mutual TLS.** Anyone who obtains `INTERNAL_API_KEY` can impersonate any user to the internal services. It is defence in depth on top of network isolation (internal ports are never published), not a substitute for mTLS or per-service JWT verification.
+- **JWTs are short-lived bearer tokens** (30 minutes) with no refresh-token or revocation endpoints.
+- **Secrets default to throwaway development values** when no `.env` exists. Copy `.env.example` and set real values before deploying anywhere.
+- **No LICENSE file** is included, so the code is "all rights reserved" by default.
+
+---
+
 ## 📡 API Endpoints Summary
 
 | Service | Method | Path | Description |
@@ -133,15 +147,12 @@ npm test
 | **Gateway / Auth** | `GET` | `/auth/me` | Get profile details |
 | **Gateway / Expense** | `GET` | `/expenses/` | List user expenses |
 | **Gateway / Expense** | `POST` | `/expenses/` | Create expense/income item |
+| **Gateway / Expense** | `PUT` | `/expenses/{id}` | Update transaction item |
 | **Gateway / Expense** | `DELETE` | `/expenses/{id}` | Delete transaction item |
 | **Gateway / Category** | `GET` | `/categories/` | List categories |
 | **Gateway / Category** | `POST` | `/categories/` | Create custom category |
+| **Gateway / Category** | `DELETE` | `/categories/{id}` | Delete category |
 | **Gateway / Analytics**| `GET` | `/analytics/dashboard` | KPI Summary telemetry |
 | **Gateway / Analytics**| `GET` | `/analytics/by-category`| Category spending breakdown |
 | **Gateway / Analytics**| `GET` | `/analytics/monthly` | Monthly income vs expenses |
 
----
-
-## 📄 License
-
-Distributed under the MIT License.
