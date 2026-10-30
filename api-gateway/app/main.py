@@ -1,3 +1,4 @@
+import logging
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request, Response, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -6,12 +7,41 @@ from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
 from jose import jwt, JWTError
 import httpx
+import redis
 from app.config import settings
 
-limiter = Limiter(key_func=get_remote_address, default_limits=["120/minute"])
+logger = logging.getLogger("api-gateway")
+
+
+def build_limiter(storage_uri: str) -> Limiter:
+    """Rate limiter whose counters live in `storage_uri` (Redis in production).
+
+    Deliberately NOT using slowapi's in_memory_fallback: silently degrading to
+    per-process counters when Redis is down would hide exactly the kind of
+    failure this service must surface.
+    """
+    return Limiter(key_func=get_remote_address, default_limits=["120/minute"], storage_uri=storage_uri)
+
+
+def check_redis(redis_url: str) -> str:
+    """Return 'healthy', 'memory' (tests only) or raise if Redis cannot be reached."""
+    if redis_url.startswith("memory://"):
+        return "memory"
+    redis.Redis.from_url(redis_url, socket_connect_timeout=2, socket_timeout=2).ping()
+    return "healthy"
+
+
+limiter = build_limiter(settings.redis_url)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    if not settings.internal_api_key:
+        raise RuntimeError("INTERNAL_API_KEY is not set: downstream services would reject every request")
+    try:
+        check_redis(settings.redis_url)
+    except Exception:
+        logger.exception("Redis is configured (%s) but unreachable; refusing to start", settings.redis_url)
+        raise
     limits = httpx.Limits(max_keepalive_connections=50, max_connections=200)
     timeout = httpx.Timeout(30.0, connect=5.0)
     app.state.http_client = httpx.AsyncClient(limits=limits, timeout=timeout)
@@ -45,8 +75,10 @@ def verify_and_extract_claims(auth_header: str):
     return None
 
 async def proxy(request: Request, target_url: str, require_auth: bool = False):
-    # Header sanitization: Strip untrusted client X-User-* headers
-    headers = {k: v for k, v in request.headers.items() if k.lower() not in ("host", "x-user-id", "x-user-email")}
+    # Header sanitization: strip untrusted client identity headers. The client's own
+    # Authorization header is not forwarded: downstream services never see raw tokens.
+    headers = {k: v for k, v in request.headers.items()
+               if k.lower() not in ("host", "x-user-id", "x-user-email", "x-internal-key", "authorization")}
 
     auth_header = request.headers.get("authorization")
     claims = verify_and_extract_claims(auth_header)
@@ -57,6 +89,8 @@ async def proxy(request: Request, target_url: str, require_auth: bool = False):
     if claims:
         headers["X-User-ID"] = claims["user_id"]
         headers["X-User-Email"] = claims["email"]
+    # Proves to downstream services that this request really came through the gateway.
+    headers["X-Internal-Key"] = settings.internal_api_key
 
     client: httpx.AsyncClient = getattr(request.app.state, "http_client", None)
     body = await request.body()
@@ -141,7 +175,8 @@ async def health():
             try:
                 r = await client.get(url, timeout=5.0)
                 results[name] = "healthy" if r.status_code == 200 else "unhealthy"
-            except:
+            except Exception as exc:
+                logger.warning("health check failed for %s: %s", name, exc)
                 results[name] = "unreachable"
     else:
         async with httpx.AsyncClient() as temp_client:
@@ -149,8 +184,14 @@ async def health():
                 try:
                     r = await temp_client.get(url, timeout=5.0)
                     results[name] = "healthy" if r.status_code == 200 else "unhealthy"
-                except:
+                except Exception as exc:
+                    logger.warning("health check failed for %s: %s", name, exc)
                     results[name] = "unreachable"
+    try:
+        results["redis"] = check_redis(settings.redis_url)
+    except Exception as exc:
+        logger.warning("Redis health check failed: %s", exc)
+        results["redis"] = "unreachable"
     return {"gateway": "healthy", "services": results}
 
 @app.get("/")

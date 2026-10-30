@@ -8,6 +8,8 @@ class Settings(BaseSettings):
     redis_url: str = "redis://redis:6379/0"
     secret_key: str = "supersecretkey123"
     algorithm: str = "HS256"
+    # Shared secret attached to proxied requests so services can reject direct callers.
+    internal_api_key: str = ""
 
     class Config:
         env_file = ".env"

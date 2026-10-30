@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, Header
 from sqlalchemy.orm import Session
 from typing import List, Optional
-import httpx
+import hmac
 from app.database import get_db
 from app.models import Expense
 from app.schemas import ExpenseCreate, ExpenseResponse
@@ -9,28 +9,28 @@ from app.config import settings
 
 router = APIRouter(prefix="/expenses", tags=["expenses"])
 
+def _is_trusted_gateway(provided_key: Optional[str]) -> bool:
+    """True only if the caller presented the shared internal key (set by the gateway).
+
+    Fails closed: if no key is configured, nothing is trusted.
+    """
+    expected = settings.internal_api_key
+    if not expected or not provided_key:
+        return False
+    return hmac.compare_digest(provided_key.encode(), expected.encode())
+
+
 async def get_current_user(
     x_user_id: Optional[int] = Header(None, alias="X-User-ID"),
     x_user_email: Optional[str] = Header(None, alias="X-User-Email"),
-    authorization: Optional[str] = Header(None)
+    x_internal_key: Optional[str] = Header(None, alias="X-Internal-Key"),
 ):
-    if x_user_id is not None:
-        return {"user_id": x_user_id, "email": x_user_email or ""}
-    
-    if authorization:
-        token = authorization.replace("Bearer ", "").strip()
-        try:
-            async with httpx.AsyncClient() as client:
-                response = await client.get(
-                    f"{settings.auth_service_url}/auth/verify",
-                    params={"token": token},
-                    timeout=10.0
-                )
-                if response.status_code == 200:
-                    return response.json()
-        except httpx.RequestError:
-            pass
-    raise HTTPException(status_code=401, detail="Invalid or missing authentication credentials")
+    # Identity is established ONCE, at the API gateway. This service only trusts
+    # the gateway-supplied identity headers, and only when they arrive together
+    # with the shared internal key. It never calls the auth service.
+    if not _is_trusted_gateway(x_internal_key) or x_user_id is None:
+        raise HTTPException(status_code=401, detail="Invalid or missing authentication credentials")
+    return {"user_id": x_user_id, "email": x_user_email or ""}
 
 @router.get("/", response_model=List[ExpenseResponse])
 async def get_expenses(
