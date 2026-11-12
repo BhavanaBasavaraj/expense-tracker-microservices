@@ -7,7 +7,10 @@
 # Optional: REDIS_TEST_URL=redis://localhost:6379/15 also runs the real-Redis integration test.
 set -euo pipefail
 
-PYTEST="python -m pytest -q -W ignore"
+# macOS ships python3 but no "python"; CI's setup-python provides both.
+# Honour an explicit PYTHON, else prefer a local venv, else python3.
+PYTHON="${PYTHON:-$([ -x ./venv/bin/python ] && echo ./venv/bin/python || echo python3)}"
+PYTEST="$PYTHON -m pytest -q -W ignore"
 GATE=95
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
