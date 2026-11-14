@@ -1,111 +1,152 @@
 # 💰 Expense Tracker Microservices Platform
 
-[![CI/CD Pipeline](https://github.com/BhavanaBasavaraj/expense-tracker-microservices/actions/workflows/ci.yml/badge.svg)](https://github.com/BhavanaBasavaraj/expense-tracker-microservices/actions/workflows/ci.yml)
+[![CI](https://github.com/BhavanaBasavaraj/expense-tracker-microservices/actions/workflows/ci.yml/badge.svg)](https://github.com/BhavanaBasavaraj/expense-tracker-microservices/actions/workflows/ci.yml)
 [![Coverage Gate](https://img.shields.io/badge/coverage%20gate-%E2%89%A595%25%20per%20service-brightgreen.svg)](./run_tests.sh)
 [![Docker Compose](https://img.shields.io/badge/Docker-Compose-blue.svg)](./docker-compose.yml)
 
-A microservices expense tracker built with **FastAPI**, **PostgreSQL**, **Redis**, **Alembic**, and a **Vite / React / TypeScript** web dashboard. 
+A personal finance tracker split into five **FastAPI** services behind a JWT-verifying API gateway, with **PostgreSQL**, **Redis**, **Alembic** migrations and a **React 18 / Vite / TypeScript** dashboard. The whole stack runs with one `docker compose up`.
 
 ---
 
-## 🎨 User Interface Screenshots
+## 🎨 Screenshots
 
-### 1. Authentication & Security Screen
-Tabbed login and user registration modal with JWT bearer authentication.
+### 1. Sign in / register
+Tabbed login and registration modal. Login returns a JWT that the dashboard sends as a bearer token.
 ![Authentication Screen](docs/screenshots/01_auth_screen.png)
 
-### 2. Live Financial Overview Dashboard
-Real-time financial telemetry, KPI summary cards, Recharts spending breakdown, and transaction history table.
+### 2. Dashboard
+KPI cards (income, expenses, net balance, transaction count), a category spending pie chart, a monthly income-vs-expenses bar chart, and a searchable transaction table.
 ![Financial Overview Dashboard](docs/screenshots/02_dashboard_overview.png)
 
-### 3. Add Transaction Modal
-Modal interface for recording income and expense entries with custom categories.
+### 3. Add transaction
+Modal for recording an income or expense entry against one of the user's categories.
 ![Add Transaction Modal](docs/screenshots/03_add_transaction_modal.png)
 
 ---
 
-## 🚀 Key Microservices Architecture & Features
+## 🏗 Architecture
 
 ```
-                              ┌───────────────────────┐
-                              │  Vite React Frontend  │
-                              │     (Port 3000)       │
-                              └───────────┬───────────┘
-                                          │
-                                          ▼
-                              ┌───────────────────────┐
-                              │      API Gateway      │
-                              │     (Port 8000)       │
-                              └─────┬─────┬─────┬─────┘
-                                    │     │     │
-            ┌───────────────────────┼─────┴─────┼───────────────────────┐
-            │                       │           │                       │
-            ▼                       ▼           ▼                       ▼
- ┌─────────────────────┐ ┌───────────────────┐ ┌───────────────────┐ ┌────────────────────┐
- │    Auth Service     │ │  Expense Service  │ │ Category Service  │ │ Analytics Service  │
- │     (Port 8001)     │ │    (Port 8002)    │ │    (Port 8003)    │ │    (Port 8004)     │
- └──────────┬──────────┘ └─────────┬─────────┘ └─────────┬─────────┘ └────────────────────┘
-            │                      │                     │
-            └──────────────────────┼─────────────────────┘
-                                   ▼
-                        ┌─────────────────────┐
-                        │ PostgreSQL Database │
-                        │     (Port 5433)     │
-                        └─────────────────────┘
+            Browser ──▶ React dashboard (nginx, host :3000)
+                               │  Authorization: Bearer <JWT>
+                               ▼
+                 ┌───────────────────────────┐        ┌───────┐
+                 │  API Gateway (host :8000) │───────▶│ Redis │  rate-limit counters
+                 │  JWT verify · CORS · 429  │        └───────┘
+                 └─────────────┬─────────────┘
+                               │  X-User-ID + X-Internal-Key   (Docker network only below)
+      ┌───────────────┬────────┴────────┬────────────────────┐
+      ▼               ▼                 ▼                    ▼
+ ┌─────────┐    ┌───────────┐    ┌────────────┐    ┌─────────────────┐
+ │  Auth   │    │  Expense  │    │  Category  │    │    Analytics    │
+ │  :8001  │    │   :8002   │    │   :8003    │    │      :8004      │
+ └────┬────┘    └─────┬─────┘    └─────┬──────┘    └────────┬────────┘
+      │               │   ▲            │                    │
+      ▼               ▼   └────────────┼────────────────────┘
+   auth_db       expense_db       category_db     Analytics has no database: it calls
+      └───────────────┴────────────────┘          Expense (GET /expenses/) with the
+        one PostgreSQL 14 instance                same internal key and aggregates.
+        (host 127.0.0.1:5433)
 ```
 
-1. **Centralized Gateway Authentication:**
-   - The **API Gateway (`port 8000`)** is the only component that verifies JWTs. It strips any client-supplied `X-User-ID`, `X-User-Email`, `X-Internal-Key` and `Authorization` headers, then forwards the verified identity plus a shared `X-Internal-Key`.
-   - Expense, category and analytics services trust identity headers **only** when they arrive with that key (compared in constant time; they fail closed if it is unset). They never call the auth service, so a request costs zero inter-service auth round-trips.
-   - Defence in depth: the internal services are not published to the host in `docker-compose.yml`, and the tests assert that forged headers, wrong keys and bare bearer tokens are rejected.
+| Service | Port | Responsibility | Storage |
+| :--- | :--- | :--- | :--- |
+| `api-gateway` | 8000 (published) | Single entry point. Verifies JWTs, strips spoofable headers, forwards identity, rate limits `/auth/*`, CORS, aggregated `/health` | Redis |
+| `auth-service` | 8001 (internal) | Registration, login (bcrypt + JWT issue), profile lookup | `auth_db.users` |
+| `expense-service` | 8002 (internal) | CRUD for income/expense transactions, scoped to the calling user | `expense_db.expenses` |
+| `category-service` | 8003 (internal) | Create/list/delete per-user categories | `category_db.categories` |
+| `analytics-service` | 8004 (internal) | Totals, per-category and per-month breakdowns, computed from the expense service's data | none |
+| `frontend` | 3000 → 8080 (published) | React dashboard served by unprivileged nginx | browser `localStorage` (token) |
 
-2. **Database Migrations:**
-   - Schema migrations managed via **Alembic** for `auth-service`, `expense-service`, and `category-service`; entrypoint scripts run `alembic upgrade head` on startup.
-   - Tests apply the migrations, assert the resulting schema, fail if the SQLAlchemy models drift from the migrations, and check that downgrade removes everything.
-
-3. **Rate Limiting:**
-   - `slowapi` limits authentication endpoints to `10 req/min` with counters stored in **Redis**, so limits hold across gateway instances.
-   - The gateway refuses to start if Redis is configured but unreachable (there is deliberately no silent in-memory fallback), and `/health` reports Redis status.
-
-4. **Modern Frontend Web Application:**
-   - **React 18 + Vite 5 + TypeScript** web application styled with glassmorphism design system.
-   - Recharts visual charts for category spending breakdown & monthly income vs expenses.
-   - One-click CSV financial log exports.
-
-5. **Unprivileged Docker Containers:**
-   - The five Python services use 2-stage builds and run as non-root `appuser` (uid 10001).
-   - The dashboard is built with Node, then served by the official `nginx-unprivileged` image (non-root, port 8080 inside the container, mapped to 3000 on the host).
-
-6. **Input Validation & Browser Security:**
-   - Passwords must be 8 to 72 characters (72 is bcrypt's real limit, so nothing is silently truncated). Transaction and category `type` must be `income` or `expense`, `date` must be a real `YYYY-MM-DD` date, `amount` must be positive and finite, and blank titles/names are rejected.
-   - The gateway's CORS policy is an explicit origin allowlist (`CORS_ORIGINS`, default `http://localhost:3000`), not `*`, with credentialed requests off because the dashboard uses a bearer header, not cookies. The internal services send no CORS headers at all.
-   - The dashboard shows validation errors as readable text.
+Each database-backed service owns its own database (database-per-service) on a shared Postgres instance. `init.sql` creates `expense_db` and `category_db` on first boot.
 
 ---
 
-## 🛠 Prerequisites & Local Setup
+## 🚀 Features
 
-### Running with Docker Compose (Recommended)
+### Gateway-centred authentication
+- The **gateway is the only component that verifies JWTs** (HS256, shared `SECRET_KEY` with the auth service).
+- Before proxying, it removes any client-supplied `X-User-ID`, `X-User-Email`, `X-Internal-Key` and `Authorization` headers, then adds the verified `X-User-ID` / `X-User-Email` plus a shared `X-Internal-Key`. Downstream services never see the raw token.
+- Expense, category and analytics services accept identity headers **only** with a matching internal key (compared with `hmac.compare_digest`). If `INTERNAL_API_KEY` is unset they reject everything, and the gateway refuses to start without it.
+- Internal services never call the auth service, so a request costs zero inter-service auth round-trips.
+- Every query is filtered by the caller's `user_id`; the request body cannot set `user_id`.
+
+### Rate limiting backed by Redis
+- `slowapi` limits `/auth/*` to **10 requests/minute per client IP**, with counters stored in Redis so limits hold across gateway replicas.
+- The gateway **refuses to start** if Redis is configured but unreachable (deliberately no silent in-memory fallback), and `/health` reports Redis status alongside each service.
+
+### Database migrations
+- Alembic migrations for `auth-service`, `expense-service` and `category-service`. Each container's entrypoint runs `alembic upgrade head` with bounded retries and exits non-zero if migrations still fail, so a service never starts on a bad schema.
+- `alembic/env.py` reads `DATABASE_URL` from the environment (no hardcoded URL in `alembic.ini`).
+- Tests apply the migrations, check the resulting schema, fail if the SQLAlchemy models drift from the migrations, and check that a downgrade removes everything.
+
+### Input validation
+- Passwords: 8–72 characters (72 bytes is bcrypt's real limit, so nothing is silently truncated). Emails validated with `email-validator`.
+- Transactions: `type` must be `income` or `expense`; `amount` must be positive and finite; `date` must be a real calendar date in `YYYY-MM-DD`; blank titles are rejected (whitespace is stripped); title ≤ 200 chars, description ≤ 1000.
+- Categories: `type` must be `income` or `expense`; blank names rejected.
+- The dashboard turns FastAPI's 422 validation errors into readable messages.
+
+### Browser security
+- Gateway CORS uses an explicit allowlist (`CORS_ORIGINS`, default `http://localhost:3000,http://127.0.0.1:3000`), not `*`, with credentials off because the dashboard uses a bearer header rather than cookies. Internal services send no CORS headers.
+
+### Dashboard (React 18 + Vite 5 + TypeScript)
+- Login / registration with client-side hints.
+- KPI cards from `/analytics/dashboard`.
+- **Recharts** pie chart (spend by category) and bar chart (monthly income vs expenses).
+- Transaction table with text search (title/description) and an income/expense filter.
+- Add transactions and categories via modals; delete transactions from the table.
+- **CSV export** of the currently filtered transactions.
+
+### Containers
+- The five Python services use two-stage builds on `python:3.12-slim` and run as non-root `appuser` (uid 10001).
+- The dashboard is built with Node 20 and served by `nginxinc/nginx-unprivileged` (non-root, port 8080 in the container, 3000 on the host).
+- Compose healthchecks on every service; the Postgres healthcheck queries all three databases so "healthy" means "ready to use", and services start in dependency order.
+- Only the dashboard (3000) and gateway (8000) are published. Postgres and Redis are bound to `127.0.0.1` for local debugging only.
+
+---
+
+## 🛠 Running locally
+
+### Docker Compose (recommended)
 
 ```bash
-cp .env.example .env        # then set real values (openssl rand -hex 32)
+cp .env.example .env        # then set real values: openssl rand -hex 32
 docker compose up --build
 ```
 
 Without a `.env`, compose falls back to throwaway development defaults. Never deploy with those.
 
-Reachable from the host:
-- 🌐 **Web Dashboard:** `http://localhost:3000`
-- ⚙️ **API Gateway:** `http://localhost:8000`
-- 🗄️ Postgres `127.0.0.1:5433` and Redis `127.0.0.1:6379` (loopback only, for debugging)
+| What | Where |
+| :--- | :--- |
+| Web dashboard | http://localhost:3000 |
+| API gateway | http://localhost:8000 (`/health` for status) |
+| Postgres | `127.0.0.1:5433` (user `bhavana`) |
+| Redis | `127.0.0.1:6379` |
 
-The auth, expense, category and analytics services are only reachable inside the Docker network, through the gateway.
+The auth, expense, category and analytics services are reachable only inside the Docker network, through the gateway.
 
-With the stack running, `./scripts/smoke_test.sh` registers two users and checks the full flow, including tenant isolation and forged-header rejection.
+### Environment variables (`.env`)
+
+| Variable | Used by | Purpose |
+| :--- | :--- | :--- |
+| `SECRET_KEY` | auth-service, api-gateway | Signs and verifies JWTs |
+| `INTERNAL_API_KEY` | api-gateway, expense, category, analytics | Proves a request came through the gateway |
+| `POSTGRES_PASSWORD` | postgres and all DB services | Password for the `bhavana` Postgres user |
+| `CORS_ORIGINS` | api-gateway | Comma-separated browser origins allowed to call the gateway |
+
+### Checking a running stack
+
+```bash
+./scripts/smoke_test.sh                               # registers two users and checks the full flow
+CHECK_INTERNAL_PORTS_CLOSED=1 ./scripts/smoke_test.sh # also asserts ports 8001-8004 are not reachable
+./run_curl_tests.sh                                   # verbose, step-by-step curl walkthrough of every endpoint group
+```
+
+The smoke test checks: all services and Redis healthy, register + login, create/read an expense, **user B cannot see user A's data**, analytics totals (gateway → analytics → expense), and 401s for no token, forged identity headers and a garbage JWT.
 
 ---
 
-## 🧪 Testing & Code Coverage
+## 🧪 Testing
 
 ### Backend (pytest)
 
@@ -113,46 +154,78 @@ With the stack running, `./scripts/smoke_test.sh` registers two users and checks
 pip install -r auth-service/requirements.txt -r expense-service/requirements.txt \
             -r category-service/requirements.txt -r analytics-service/requirements.txt \
             -r api-gateway/requirements.txt -r requirements-dev.txt
-./run_tests.sh                                   # add REDIS_TEST_URL=redis://localhost:6379/15 for the real-Redis test
+./run_tests.sh
+# Optional: REDIS_TEST_URL=redis://localhost:6379/15 ./run_tests.sh  (also runs the real-Redis test)
 ```
 
-`run_tests.sh` fails if any service drops below **95%** line coverage. GitHub Actions (`.github/workflows/ci.yml`) runs the same script plus the frontend tests/build and a full `docker compose` smoke test on every push and pull request.
+Unit tests use SQLite and an in-memory rate-limit store, so no Postgres or Redis is required. `run_tests.sh` fails if any service drops below **95% line coverage**.
 
-Beyond happy paths, the suites check: cross-user read/update/delete isolation, request-body ownership spoofing, forged identity headers, wrong-secret / `alg=none` / expired JWTs, the 429 after 10 auth requests, and a real Redis round-trip.
+| Suite | Tests | Coverage |
+| :--- | :---: | :---: |
+| Auth service (+ end-to-end auth flow) | 15 | 97% |
+| Expense service | 26 | 100% |
+| Category service | 18 | 100% |
+| Analytics service | 10 | 100% |
+| API gateway | 24 | 96% |
+| Alembic migrations (3 services) | 3 | — |
+| Gateway ↔ real Redis | 1 | runs when `REDIS_TEST_URL` is set |
 
-### Running Frontend Component Tests
+Beyond happy paths, the suites check cross-user read/update/delete isolation, request-body ownership spoofing, forged identity headers, wrong/missing internal keys, fail-closed behaviour when no key is configured, wrong-secret / `alg=none` / expired JWTs, the 429 after 10 auth requests, startup refusal when Redis or the internal key is missing, CORS allow/deny, and validation edge cases (non-finite amounts, invalid dates, bad types).
+
+### Frontend (Vitest + Testing Library)
 
 ```bash
 cd frontend
-npm test
+npm ci
+npm test          # 8 tests: API client error handling, auth modal, dashboard rendering
+npm run build     # type-checks with tsc, then builds
 ```
 
+### CI
+
+GitHub Actions (`.github/workflows/ci.yml`) runs on every push to `main` and every pull request:
+1. **Backend** — `./run_tests.sh` with a Redis service container (so the real-Redis test runs too).
+2. **Frontend** — `npm ci`, `npm test`, `npm run build`.
+3. **Stack smoke test** — `docker compose up --build --wait`, then `scripts/smoke_test.sh` with the internal-ports check; dumps logs on failure.
+
 ---
 
-## ⚠️ Known Limitations
+## 📡 API (via the gateway, `http://localhost:8000`)
 
-- **Service-to-service trust is a shared secret, not mutual TLS.** Anyone who obtains `INTERNAL_API_KEY` can impersonate any user to the internal services. It is defence in depth on top of network isolation (internal ports are never published), not a substitute for mTLS or per-service JWT verification.
-- **JWTs are short-lived bearer tokens** (30 minutes) with no refresh-token or revocation endpoints.
-- **Secrets default to throwaway development values** when no `.env` exists. Copy `.env.example` and set real values before deploying anywhere.
+All routes except `/auth/*`, `/health` and `/` require `Authorization: Bearer <token>`.
+
+| Method | Path | Description |
+| :--- | :--- | :--- |
+| `POST` | `/auth/register` | Create a user (`email`, `first_name`, `last_name`, `password`) |
+| `POST` | `/auth/login` | Form-encoded `username` (email) + `password` → `{access_token, token_type}` |
+| `GET` | `/auth/me?token=<jwt>` | Current user's profile (token passed as a query parameter) |
+| `GET` | `/auth/verify?token=<jwt>` | Validate a token and return its claims |
+| `GET` | `/expenses/` | List the caller's transactions |
+| `POST` | `/expenses/` | Create a transaction (`title`, `amount`, `type`, `date`, optional `category_id`, `description`) |
+| `PUT` | `/expenses/{id}` | Replace a transaction (API only; no edit UI yet) |
+| `DELETE` | `/expenses/{id}` | Delete a transaction |
+| `GET` | `/categories/` | List the caller's categories |
+| `POST` | `/categories/` | Create a category (`name`, `type`) |
+| `DELETE` | `/categories/{id}` | Delete a category (API only; no UI yet) |
+| `GET` | `/analytics/dashboard` | `total_income`, `total_expenses`, `net_balance`, `total_transactions` |
+| `GET` | `/analytics/by-category` | `{category_id: {total, count}}` |
+| `GET` | `/analytics/monthly` | `{YYYY-MM: {income, expenses}}` |
+| `GET` | `/health` | Gateway status plus each service and Redis |
+
+Auth endpoints are limited to 10 requests/minute per IP; the 11th returns `429`.
+
+---
+
+## ⚠️ Known limitations
+
+- **Service-to-service trust is a shared secret, not mutual TLS.** Anyone holding `INTERNAL_API_KEY` can impersonate any user to the internal services. It is defence in depth on top of network isolation, not a substitute for mTLS or per-service token verification.
+- **JWTs are 30-minute bearer tokens** with no refresh or revocation. The dashboard keeps the token in `localStorage` and signs the user out on any failed data load.
+- **`/auth/me` takes the token as a query parameter**, so it can end up in access logs.
+- **The dashboard's API URL is hardcoded** to `http://localhost:8000` in `frontend/src/api.ts`; deploying elsewhere needs a code change.
+- **Analytics fetches every transaction for the user on each request** and aggregates in Python. Fine for a personal tracker, but not designed for large histories.
+- **Uncategorised transactions** appear under the key `"None"` in `/analytics/by-category` (the `"uncategorized"` default is never reached because `category_id` is present but null).
+- **No cross-service referential integrity.** Deleting a category does not touch expenses that reference it, and `category_id` on an expense is not checked against the category service.
+- **Amounts are stored as floats** and dates as `YYYY-MM-DD` strings.
+- **Services also call `Base.metadata.create_all()` on startup**, alongside Alembic. Harmless today (migrations run first), but it can mask a missing migration.
+- **Secrets default to throwaway development values** when no `.env` exists.
 - **No LICENSE file** is included, so the code is "all rights reserved" by default.
-
----
-
-## 📡 API Endpoints Summary
-
-| Service | Method | Path | Description |
-| :--- | :--- | :--- | :--- |
-| **Gateway / Auth** | `POST` | `/auth/register` | User registration |
-| **Gateway / Auth** | `POST` | `/auth/login` | Bearer JWT login |
-| **Gateway / Auth** | `GET` | `/auth/me` | Get profile details |
-| **Gateway / Expense** | `GET` | `/expenses/` | List user expenses |
-| **Gateway / Expense** | `POST` | `/expenses/` | Create expense/income item |
-| **Gateway / Expense** | `PUT` | `/expenses/{id}` | Update transaction item |
-| **Gateway / Expense** | `DELETE` | `/expenses/{id}` | Delete transaction item |
-| **Gateway / Category** | `GET` | `/categories/` | List categories |
-| **Gateway / Category** | `POST` | `/categories/` | Create custom category |
-| **Gateway / Category** | `DELETE` | `/categories/{id}` | Delete category |
-| **Gateway / Analytics**| `GET` | `/analytics/dashboard` | KPI Summary telemetry |
-| **Gateway / Analytics**| `GET` | `/analytics/by-category`| Category spending breakdown |
-| **Gateway / Analytics**| `GET` | `/analytics/monthly` | Monthly income vs expenses |
-
